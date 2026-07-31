@@ -1,0 +1,21 @@
+{
+  "name": "dandanplay-wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
+  }
+}
