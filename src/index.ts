@@ -14,6 +14,12 @@ interface AuthenticatedPath {
   upstreamPath: string;
 }
 
+interface CachePlan {
+  cacheKey: Request;
+  inspectBusinessResult: boolean;
+  upstreamBody?: ArrayBuffer;
+}
+
 const CORS_HEADERS: Readonly<Record<string, string>> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
@@ -46,13 +52,17 @@ export function splitTokenPrefixedPath(pathname: string): AuthenticatedPath | nu
   };
 }
 
-async function sha256(input: string): Promise<Uint8Array> {
-  const bytes = new TextEncoder().encode(input);
+async function sha256(input: string | ArrayBuffer): Promise<Uint8Array> {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
 }
 
 function toBase64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes));
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export async function createSignature(
@@ -117,22 +127,71 @@ function withCors(
   });
 }
 
-function cacheKeyFor(requestUrl: URL, upstreamPath: string): Request {
+function cacheKeyFor(
+  requestUrl: URL,
+  upstreamPath: string,
+  bodyHash?: string,
+): Request {
   const cacheUrl = new URL(requestUrl.toString());
   cacheUrl.pathname = `${CACHE_NAMESPACE}${upstreamPath}`;
+  if (bodyHash) {
+    cacheUrl.searchParams.set("__dandanplay_wrapper_body_sha256", bodyHash);
+  }
   return new Request(cacheUrl.toString(), { method: "GET" });
 }
 
-function shouldUseCache(request: Request): boolean {
-  if (request.method !== "GET") return false;
+function cacheAllowedByHeaders(request: Request): boolean {
   if (request.headers.has("Authorization") || request.headers.has("Cookie")) return false;
 
   const directive = request.headers.get("Cache-Control")?.toLowerCase() ?? "";
   return !directive.includes("no-cache") && !directive.includes("no-store");
 }
 
-function cacheableResponse(response: Response): boolean {
-  return response.status === 200 && !response.headers.has("Set-Cookie");
+function isMatchEndpoint(method: string, upstreamPath: string): boolean {
+  return (
+    method === "POST" &&
+    /^\/api\/v2\/match(?:\/batch)?\/?$/.test(upstreamPath)
+  );
+}
+
+async function createCachePlan(
+  request: Request,
+  requestUrl: URL,
+  upstreamPath: string,
+): Promise<CachePlan | null> {
+  if (!cacheAllowedByHeaders(request)) return null;
+
+  if (request.method === "GET") {
+    return {
+      cacheKey: cacheKeyFor(requestUrl, upstreamPath),
+      inspectBusinessResult: false,
+    };
+  }
+
+  if (!isMatchEndpoint(request.method, upstreamPath)) return null;
+
+  const upstreamBody = await request.arrayBuffer();
+  const bodyHash = toHex(await sha256(upstreamBody));
+  return {
+    cacheKey: cacheKeyFor(requestUrl, upstreamPath, bodyHash),
+    inspectBusinessResult: true,
+    upstreamBody,
+  };
+}
+
+async function cacheableResponse(
+  response: Response,
+  inspectBusinessResult: boolean,
+): Promise<boolean> {
+  if (response.status !== 200 || response.headers.has("Set-Cookie")) return false;
+  if (!inspectBusinessResult) return true;
+
+  try {
+    const payload = (await response.clone().json()) as { success?: unknown };
+    return payload.success !== false;
+  } catch {
+    return false;
+  }
 }
 
 function createUpstreamHeaders(request: Request, env: Env): Headers {
@@ -177,11 +236,10 @@ async function proxyRequest(
   }
 
   const { upstreamPath } = authenticatedPath;
-  const useCache = shouldUseCache(request);
-  const cacheKey = cacheKeyFor(incomingUrl, upstreamPath);
+  const cachePlan = await createCachePlan(request, incomingUrl, upstreamPath);
 
-  if (useCache) {
-    const cached = await caches.default.match(cacheKey);
+  if (cachePlan) {
+    const cached = await caches.default.match(cachePlan.cacheKey);
     if (cached) return withCors(cached, "HIT");
   }
 
@@ -204,11 +262,17 @@ async function proxyRequest(
   const upstreamResponse = await fetch(upstreamUrl, {
     method: request.method,
     headers,
-    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+    body:
+      request.method === "GET" || request.method === "HEAD"
+        ? undefined
+        : (cachePlan?.upstreamBody ?? request.body),
     redirect: "follow",
   });
 
-  if (useCache && cacheableResponse(upstreamResponse)) {
+  if (
+    cachePlan &&
+    (await cacheableResponse(upstreamResponse, cachePlan.inspectBusinessResult))
+  ) {
     const ttl = getCacheTtl(env.CACHE_TTL_SECONDS);
     const cacheHeaders = new Headers(upstreamResponse.headers);
     cacheHeaders.set("Cache-Control", `public, max-age=${ttl}, s-maxage=${ttl}`);
@@ -218,11 +282,11 @@ async function proxyRequest(
       statusText: upstreamResponse.statusText,
       headers: cacheHeaders,
     });
-    ctx.waitUntil(caches.default.put(cacheKey, cachedResponse.clone()));
+    ctx.waitUntil(caches.default.put(cachePlan.cacheKey, cachedResponse.clone()));
     return withCors(cachedResponse, "MISS");
   }
 
-  return withCors(upstreamResponse, useCache ? "MISS" : "BYPASS", "no-store");
+  return withCors(upstreamResponse, cachePlan ? "MISS" : "BYPASS", "no-store");
 }
 
 export default {

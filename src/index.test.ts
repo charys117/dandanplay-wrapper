@@ -81,7 +81,10 @@ describe("worker proxy", () => {
     const response = await worker.fetch(
       new Request("https://proxy.example/proxy-token/api/v2/match?source=player", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ fileName: "example" }),
       }),
       env,
@@ -106,6 +109,86 @@ describe("worker proxy", () => {
     );
     expect(response.headers.get("X-Proxy-Cache")).toBe("BYPASS");
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it.each(["match", "match/batch"])(
+    "caches POST /api/v2/%s by request body hash",
+    async (endpoint) => {
+      const cache = {
+        match: vi.fn(async (_request: Request) => undefined),
+        put: vi.fn(async (_request: Request, _response: Response) => undefined),
+      };
+      const requestBody = JSON.stringify({
+        fileName: "example",
+        fileHash: "658d05841b9476ccc7420b3f0bb21c3b",
+      });
+      let forwardedBody = "";
+      vi.stubGlobal("caches", { default: cache });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+          if (init?.body instanceof ArrayBuffer) {
+            forwardedBody = new TextDecoder().decode(init.body);
+          }
+          return Response.json({ success: true, matches: [] });
+        }),
+      );
+      const waitUntil = vi.fn();
+
+      const response = await worker.fetch(
+        new Request(`https://proxy.example/proxy-token/api/v2/${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestBody,
+        }),
+        env,
+        { waitUntil, passThroughOnException: vi.fn() } as unknown as ExecutionContext,
+      );
+
+      expect(forwardedBody).toBe(requestBody);
+      expect(response.headers.get("X-Proxy-Cache")).toBe("MISS");
+      expect(cache.put).toHaveBeenCalledOnce();
+      const cacheKey = cache.put.mock.calls[0][0] as Request;
+      expect(cacheKey.method).toBe("GET");
+      expect(cacheKey.url).not.toContain("proxy-token");
+      expect(
+        new URL(cacheKey.url).searchParams.get(
+          "__dandanplay_wrapper_body_sha256",
+        ),
+      ).toMatch(/^[0-9a-f]{64}$/);
+    },
+  );
+
+  it("does not cache a match business error returned with HTTP 200", async () => {
+    const cache = {
+      match: vi.fn(async (_request: Request) => undefined),
+      put: vi.fn(async (_request: Request, _response: Response) => undefined),
+    };
+    vi.stubGlobal("caches", { default: cache });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          success: false,
+          errorCode: 1,
+          errorMessage: "match failed",
+        }),
+      ),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://proxy.example/proxy-token/api/v2/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: "example" }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(cache.put).not.toHaveBeenCalled();
   });
 
   it("caches a successful anonymous GET without putting the token in the cache key", async () => {

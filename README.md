@@ -24,8 +24,9 @@ https://<你的Worker域名>/<PROXY_TOKEN>/<弹弹play API路径>?<原查询参�
 ## 缓存行为
 
 - 无 `Authorization` 和 `Cookie` 的成功 `GET` 响应会写入 Cloudflare Cache API。
+- `POST /api/v2/match` 和 `POST /api/v2/match/batch` 也会缓存；内部缓存键使用原始请求体的 SHA-256，不同文件或批次不会互相命中，原始请求体不会出现在缓存 URL 中。
 - 默认 TTL 为 86400 秒（24 小时）。即使把 `CACHE_TTL_SECONDS` 配成更小的值，Worker 也会强制使用至少 24 小时。
-- 带用户凭据的请求、非 GET 请求、非 200 响应以及带 `Set-Cookie` 的响应不会缓存。
+- 带用户凭据的请求、上述两个接口以外的非 GET 请求、非 200 响应以及带 `Set-Cookie` 的响应不会缓存。match 接口返回 HTTP 200 但 `success:false` 时也不会缓存。
 - `X-Proxy-Cache` 响应头会显示 `HIT`、`MISS` 或 `BYPASS`。
 - Cloudflare Cache API 按数据中心缓存，TTL 表示最长新鲜时间；低频对象仍可能因边缘缓存空间策略提前被逐出。
 
