@@ -7,9 +7,6 @@
   "observability": {
     "enabled": true
   },
-  "vars": {
-    "CACHE_TTL_SECONDS": "86400"
-  },
   "secrets": {
     "required": [
       "DANDANPLAY_APP_ID",

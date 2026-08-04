@@ -23,14 +23,7 @@ https://<你的Worker域名>/<PROXY_TOKEN>/<弹弹play API路径>?<原查询参�
 
 ## 缓存行为
 
-- 无 `Authorization` 和 `Cookie` 的成功 `GET` 响应会写入 Cloudflare Cache API。
-- `POST /api/v2/match` 和 `POST /api/v2/match/batch` 也会缓存；内部缓存键使用原始请求体的 SHA-256，不同文件或批次不会互相命中，原始请求体不会出现在缓存 URL 中。
-- 默认 TTL 为 86400 秒（24 小时）。即使把 `CACHE_TTL_SECONDS` 配成更小的值，Worker 也会强制使用至少 24 小时。
-- 带用户凭据的请求、上述两个接口以外的非 GET 请求、非 200 响应以及带 `Set-Cookie` 的响应不会缓存。match 接口返回 HTTP 200 但 `success:false` 时也不会缓存。
-- `X-Proxy-Cache` 响应头会显示 `HIT`、`MISS` 或 `BYPASS`。
-- Cloudflare Cache API 按数据中心缓存，TTL 表示最长新鲜时间；低频对象仍可能因边缘缓存空间策略提前被逐出。
-
-如果需要主动绕过缓存，可发送 `Cache-Control: no-cache`。不支持自定义请求头的播放器可以给请求添加一个无业务影响且不同的查询参数来形成新的缓存键，但应避免高频使用。
+Worker 不缓存代理响应，并统一返回 `Cache-Control: no-store`。每次请求都会实时转发到弹弹play API。
 
 ## 本地开发
 
@@ -86,8 +79,6 @@ npm run check
    - `PROXY_TOKEN`
 6. 重新部署。以后推送到生产分支会自动构建并部署；其他分支可在 Branch control 中启用预览构建。
 
-`CACHE_TTL_SECONDS` 已在 `wrangler.jsonc` 中设为 `86400`，不是敏感配置。如需延长缓存，可以改为更大的秒数。
-
 也可以先通过 CLI 手动部署：
 
 ```bash
@@ -103,5 +94,5 @@ npm run deploy
 - 上游固定为 `https://api.dandanplay.net`，避免代理被用于访问任意地址。
 - 弹幕接口的 302 跳转由 Worker 跟随，调用方收到最终响应。
 - 弹弹play业务错误可能使用 HTTP 200 返回；本代理不改写其响应体。
-- 如果将来使用需要用户登录的受限接口，仍需提供原 API 要求的 `Authorization: Bearer <JWT>`，并且此类请求会自动绕过缓存。
+- 如果将来使用需要用户登录的受限接口，仍需提供原 API 要求的 `Authorization: Bearer <JWT>`。
 - 请遵守弹弹play开放弹幕网络的缓存、配额、署名和非商业使用约定。
