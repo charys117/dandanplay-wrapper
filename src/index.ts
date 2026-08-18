@@ -136,9 +136,14 @@ async function proxyRequest(
     return jsonError(401, "Invalid proxy token");
   }
 
-  const { upstreamPath } = authenticatedPath;
+  // 折叠开头的连续斜杠：`//host/...` 会被 URL 解析为协议相对地址，
+  // 否则形如 /<token>//api/... 的请求会被转发到错误的主机。
+  const upstreamPath = authenticatedPath.upstreamPath.replace(/^\/+/, "/");
 
   const upstreamUrl = new URL(upstreamPath, UPSTREAM_ORIGIN);
+  if (upstreamUrl.origin !== UPSTREAM_ORIGIN) {
+    return jsonError(400, "Invalid upstream path");
+  }
   upstreamUrl.search = incomingUrl.search;
 
   const timestamp = Math.floor(Date.now() / 1000).toString();
@@ -148,7 +153,7 @@ async function proxyRequest(
     await createSignature(
       env.DANDANPLAY_APP_ID,
       timestamp,
-      upstreamPath,
+      upstreamUrl.pathname,
       env.DANDANPLAY_APP_SECRET,
     ),
   );
