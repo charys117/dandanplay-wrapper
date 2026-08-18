@@ -108,4 +108,36 @@ describe("worker proxy", () => {
     expect(response.headers.get("X-Proxy-Cache")).toBeNull();
     expect(response.headers.get("Cache-Control")).toBe("no-store");
   });
+
+  it("collapses extra slashes after the token instead of changing hosts", async () => {
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) =>
+      Response.json({ url: input.toString() }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(
+      new Request("https://proxy.example/proxy-token//api/v2/match"),
+      env,
+      ctx,
+    );
+    const payload = (await response.json()) as { url: string };
+
+    expect(payload.url).toBe("https://api.dandanplay.net/api/v2/match");
+  });
+
+  it("never proxies to a foreign host via protocol-relative paths", async () => {
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) =>
+      Response.json({ url: input.toString() }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(
+      new Request("https://proxy.example/proxy-token//attacker.com/steal"),
+      env,
+      ctx,
+    );
+    const payload = (await response.json()) as { url: string };
+
+    expect(payload.url).toBe("https://api.dandanplay.net/attacker.com/steal");
+  });
 });
